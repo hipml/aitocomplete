@@ -12,13 +12,20 @@ AItocomplete is a simple Emacs minor mode that integrates Ollama via a REST API 
 
 Ensure you have Ollama installed and running locally.
 
-Clone this repository and place llm-autocomplete.el in your Emacs load-path.
+Clone this repository and place `llm-autocomplete.el` in your Emacs load-path.
 
 Add the following to your Emacs config:
 
 ```elisp
 (require 'llm-autocomplete)
 (llm-autocomplete-mode 1)
+```
+
+Or for integration with [company](https://company-mode.github.io/):
+
+```elisp
+(require 'company-llm)
+(company-llm-setup)
 ```
 
 ## Usage
