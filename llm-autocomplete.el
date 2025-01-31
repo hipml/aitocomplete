@@ -33,14 +33,14 @@
   "Get context before point for LLM completion."
   (let* ((pos (point))
          (start (max (- pos llm-autocomplete-context-length) (point-min))))
-    (message "Position: %s, Start: %s" pos start)
+    ;; (message "Position: %s, Start: %s" pos start)
     (let ((context (buffer-substring-no-properties start pos)))
-      (message "Context: %s" context)
+      ;; (message "Context: %s" context)
       context)))
 
 (defun llm-autocomplete--query-llm (prompt callback)
   "Send PROMPT to the LLM server and call CALLBACK with the result."
-  (let ((request-id (make-symbol "llm-request")))
+  (let* ((request-id (make-symbol "llm-request")))
     (setq llm-autocomplete--ongoing-request request-id)
     (request
      llm-autocomplete-endpoint
@@ -49,19 +49,17 @@
                           ("prompt" . ,prompt)))
      :headers '(("Content-Type" . "application/json"))
      :parser 'json-read
-     :success (cl-function
-               (lambda (&key data &allow-other-keys)
-                 (when (eq llm-autocomplete--ongoing-request request-id)
-                   (let ((reply (gethash "response" data)))
-                     (when reply
-                       (setq llm-autocomplete--cached-completions
-                             (split-string reply "\n" t))
-                       (message "Received completions: %s" 
-                                llm-autocomplete--cached-completions)
-                       (funcall callback llm-autocomplete--cached-completions)))))))
-     :error (cl-function
-             (lambda (&key error-thrown &allow-other-keys)
-               (message "LLM request error: %S" error-thrown)))))
+     :success (lambda (&rest args)
+                (when (eq llm-autocomplete--ongoing-request request-id)
+                  (let ((reply (gethash "response" (plist-get args :data))))
+                    (when reply
+                      (setq llm-autocomplete--cached-completions
+                            (split-string reply "\n" t))
+                      (message "Received completions: %s" 
+                               llm-autocomplete--cached-completions)
+                      (funcall callback llm-autocomplete--cached-completions)))))
+     :error (lambda (&rest args)
+              (message "LLM request error: %S" (plist-get args :error-thrown))))))
 
 (defun llm-autocomplete-fetch-dynamic (callback)
   "Fetch completions dynamically for completion-at-point."

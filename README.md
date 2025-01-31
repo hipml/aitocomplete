@@ -17,8 +17,8 @@ Clone this repository and place llm-autocomplete.el in your Emacs load-path.
 Add the following to your Emacs config:
 
 ```elisp
-    (require 'llm-autocomplete)
-    (llm-autocomplete-mode 1)
+(require 'llm-autocomplete)
+(llm-autocomplete-mode 1)
 ```
 
 ## Usage
