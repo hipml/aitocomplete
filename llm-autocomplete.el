@@ -33,7 +33,10 @@
   "Get context before point for LLM completion."
   (let* ((pos (point))
          (start (max (- pos llm-autocomplete-context-length) (point-min))))
-    (buffer-substring-no-properties start pos)))
+    (message "Position: %s, Start: %s" pos start)
+    (let ((context (buffer-substring-no-properties start pos)))
+      (message "Context: %s" context)
+      context)))
 
 (defun llm-autocomplete--query-llm (prompt callback)
   "Send PROMPT to the LLM server and call CALLBACK with the result."
@@ -42,43 +45,66 @@
     (request
      llm-autocomplete-endpoint
      :type "POST"
-     :data (json-encode `((model . ,llm-autocomplete-model)
-                          (prompt . ,prompt)))
+     :data (json-encode `(("model" . ,llm-autocomplete-model)
+                          ("prompt" . ,prompt)))
      :headers '(("Content-Type" . "application/json"))
-     :parser 'buffer-string
+     :parser 'json-read
      :success (cl-function
                (lambda (&key data &allow-other-keys)
-                 (when (and data (eq llm-autocomplete--ongoing-request request-id))
-                   (let ((json-object-type 'hash-table)
-                         (json-array-type 'list))
-                     (condition-case err
-                         (let ((json-data (json-read-from-string data)))
-                           (when-let ((reply (gethash "response" json-data)))
-                             (setq llm-autocomplete--cached-completions
-                                   (split-string reply "\n" t))
-                             (funcall callback llm-autocomplete--cached-completions)))
-                       (error (message "Error parsing response: %S" err)))))))
+                 (when (eq llm-autocomplete--ongoing-request request-id)
+                   (let ((reply (gethash "response" data)))
+                     (when reply
+                       (setq llm-autocomplete--cached-completions
+                             (split-string reply "\n" t))
+                       (message "Received completions: %s" 
+                                llm-autocomplete--cached-completions)
+                       (funcall callback llm-autocomplete--cached-completions)))))))
      :error (cl-function
              (lambda (&key error-thrown &allow-other-keys)
-               (message "LLM request error: %S" error-thrown))))))
+               (message "LLM request error: %S" error-thrown)))))
+
+(defun llm-autocomplete-fetch-dynamic (callback)
+  "Fetch completions dynamically for completion-at-point."
+  (if llm-autocomplete--cached-completions
+      (funcall callback llm-autocomplete--cached-completions)
+    (llm-autocomplete--query-llm 
+     (llm-autocomplete--get-context)
+     (lambda (completions)
+       (setq llm-autocomplete--cached-completions completions)
+       (funcall callback completions)))))
+
 
 (defun llm-autocomplete-complete-at-point ()
   "Provide completions at point using LLM."
   (let* ((bounds (bounds-of-thing-at-point 'symbol))
          (start (or (car bounds) (point)))
          (end (or (cdr bounds) (point)))
-         (context (llm-autocomplete--get-context)))
-    (list start end
-          (completion-table-dynamic
-           (lambda (_prefix)
-             (let ((result nil))
-               ;; Pass captured `context` to the query
-               (llm-autocomplete--query-llm
-                context
-                (lambda (response)
-                  (setq result (split-string response "\n" t))))
-               result)))
-          :exclusive 'no)))
+         (prefix (buffer-substring-no-properties start end)))
+
+    ;; If cached completions exist, use them immediately
+    (if llm-autocomplete--cached-completions
+        (progn
+          (message "Using cached completions: %s" llm-autocomplete--cached-completions)
+          (list start end (completion-table-dynamic
+                           (lambda (_string) llm-autocomplete--cached-completions))))
+
+      ;; Otherwise, initiate a fresh LLM request asynchronously
+      (progn
+        (message "Requesting LLM completions...")
+        (setq llm-autocomplete--cached-completions nil)
+        (llm-autocomplete--query-llm
+         (llm-autocomplete--get-context)
+         (lambda (completions)
+           (setq llm-autocomplete--cached-completions completions)
+           (message "LLM returned completions: %s" completions)
+           ;; Trigger completion again after receiving the results
+           (completion-in-region start end
+                                 (completion-table-dynamic
+                                  (lambda (_string) llm-autocomplete--cached-completions))))))
+    
+    ;; Return a valid completion function immediately (even before LLM returns)
+    (list start end (completion-table-dynamic
+                     (lambda (_string) llm-autocomplete--cached-completions))))))
 
 ;;;###autoload
 (define-minor-mode llm-autocomplete-mode
@@ -87,9 +113,9 @@
   :global nil
   (if llm-autocomplete-mode
       (add-hook 'completion-at-point-functions
-                #'llm-autocomplete-complete-at-point nil t)
+                #'llm-autocomplete-complete-at-point)
     (remove-hook 'completion-at-point-functions
-                 #'llm-autocomplete-complete-at-point t)))
+                 #'llm-autocomplete-complete-at-point)))
 
 (defun llm-test-query ()
   "Test sending a query to the LLM server."
