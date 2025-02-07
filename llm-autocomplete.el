@@ -1,136 +1,111 @@
-;;; llm-autocomplete.el --- Local LLM-powered autocomplete for Emacs
-
 (require 'json)
-(require 'request)
-(require 'cl-lib)
 
-(defgroup llm-autocomplete nil
-  "Local LLM-powered autocompletion."
-  :group 'completion)
+(defgroup ollama-complete nil
+  "Ollama completion interface for Emacs."
+  :group 'applications
+  :prefix "ollama-complete-")
 
-(defcustom llm-autocomplete-endpoint "http://localhost:11434/api/generate"
-  "Endpoint URL for the local LLM server."
+(defcustom ollama-complete-model "llama3.2"
+  "Default Ollama model to use."
   :type 'string
-  :group 'llm-autocomplete)
+  :group 'ollama-complete)
 
-(defcustom llm-autocomplete-model "llama3.2"
-  "Model to use for completion."
-  :type 'string
-  :group 'llm-autocomplete)
+(defvar ollama-complete-chat-buffer "*Ollama Chat*"
+  "Buffer name for Ollama chat interactions.")
 
-(defcustom llm-autocomplete-context-length 1000
-  "Number of characters before point to send as context."
-  :type 'integer
-  :group 'llm-autocomplete)
+(defvar-local ollama-complete--current-response ""
+  "Accumulated response for current LLM query.")
 
-;; Store ongoing and cached completions
-(defvar-local llm-autocomplete--ongoing-request nil
-  "Ongoing request identifier for LLM completions.")
-(defvar-local llm-autocomplete--cached-completions nil
-  "Cached completions for the current context.")
+(defun ollama-complete--server-running-p ()
+  "Check if Ollama server is running."
+  (= 0 (call-process "curl" nil nil nil 
+                     "--silent" 
+                     "--fail" 
+                     "http://localhost:11434/api/tags")))
 
-(defun llm-autocomplete--get-context ()
-  "Get context before point for LLM completion."
-  (let* ((pos (point))
-         (start (max (- pos llm-autocomplete-context-length) (point-min))))
-    ;; (message "Position: %s, Start: %s" pos start)
-    (let ((context (buffer-substring-no-properties start pos)))
-      ;; (message "Context: %s" context)
-      context)))
+(defun ollama-complete-chat ()
+  "Open or switch to the Ollama chat buffer."
+  (interactive)
+  (let ((buf (get-buffer-create ollama-complete-chat-buffer)))
+    (with-current-buffer buf
+      (unless (eq major-mode 'ollama-complete-chat-mode)
+        (ollama-complete-chat-mode))
+      (when (= (buffer-size) 0)
+        (insert "Welcome to Ollama Chat!\n")
+        (insert (format "Currently using model: %s\n\n" ollama-complete-model))
+        (insert "Type your message and press C-c C-c to send.\n")
+        (insert "----------------------------------------\n\n")))
+    (display-buffer buf 
+                    '((display-buffer-in-side-window)
+                      (side . right)
+                      (window-width . 50)))))
 
-(defun llm-autocomplete--query-llm (prompt callback)
-  "Send PROMPT to the LLM server and call CALLBACK with the result."
-  (let* ((request-id (make-symbol "llm-request")))
-    (setq llm-autocomplete--ongoing-request request-id)
-    (request
-     llm-autocomplete-endpoint
-     :type "POST"
-     :data (json-encode `(("model" . ,llm-autocomplete-model)
-                          ("prompt" . ,prompt)))
-     :headers '(("Content-Type" . "application/json"))
-     :parser 'json-read
-     :success (lambda (&rest args)
-                (when (eq llm-autocomplete--ongoing-request request-id)
-                  (let ((reply (gethash "response" (plist-get args :data))))
-                    (when reply
-                      (setq llm-autocomplete--cached-completions
-                            (split-string reply "\n" t))
-                      (message "Received completions: %s" 
-                               llm-autocomplete--cached-completions)
-                      (funcall callback llm-autocomplete--cached-completions)))))
-     :error (lambda (&rest args)
-              (message "LLM request error: %S" (plist-get args :error-thrown))))))
+(defvar ollama-complete-chat-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") 'ollama-complete-send-message)
+    map)
+  "Keymap for Ollama chat mode.")
 
-(defun llm-autocomplete-fetch-dynamic (callback)
-  "Fetch completions dynamically for completion-at-point."
-  (if llm-autocomplete--cached-completions
-      (funcall callback llm-autocomplete--cached-completions)
-    (llm-autocomplete--query-llm 
-     (llm-autocomplete--get-context)
-     (lambda (completions)
-       (setq llm-autocomplete--cached-completions completions)
-       (funcall callback completions)))))
+(define-derived-mode ollama-complete-chat-mode text-mode "Ollama Chat"
+  "Major mode for Ollama chat interaction."
+  (setq-local word-wrap t)
+  (visual-line-mode 1))
 
+(defun ollama-complete--process-filter (proc output)
+  "Process filter for Ollama responses."
+  (when-let* ((buf (process-buffer proc)))
+    (with-current-buffer buf
+      (save-excursion
+        (goto-char (point-max))
+        ;; Remove "Ollama is thinking..." and insert prefix on first response
+        (when (and (string-match-p "{" output)  ; First JSON response
+                   (save-excursion 
+                     (search-backward "Ollama is thinking..." nil t)))
+          (let ((inhibit-read-only t))
+            (delete-region (line-beginning-position) (line-end-position))
+            (insert "Ollama: ")))
+        
+        ;; Process each line of JSON
+        (dolist (line (split-string output "\n" t))
+          (when-let* ((json-data (ignore-errors (json-read-from-string line)))
+                     (msg (alist-get 'message json-data))
+                     (content (alist-get 'content msg)))
+            ;; Accumulate the response
+            (setq ollama-complete--current-response 
+                  (concat ollama-complete--current-response content))
+            ;; Update the display
+            (let ((inhibit-read-only t))
+              (delete-region (line-beginning-position) (point-max))
+              (insert ollama-complete--current-response))
+            (redisplay)))))))
 
-(defun llm-autocomplete-complete-at-point ()
-  "Provide completions at point using LLM."
-  (let* ((bounds (bounds-of-thing-at-point 'symbol))
-         (start (or (car bounds) (point)))
-         (end (or (cdr bounds) (point)))
-         (prefix (buffer-substring-no-properties start end)))
+(defun ollama-complete-send-message ()
+  "Send the current message to Ollama."
+  (interactive)
+  (if (not (ollama-complete--server-running-p))
+      (message "Error: Ollama server is not running!")
+    (let* ((message-text (buffer-substring-no-properties
+                         (line-beginning-position)
+                         (line-end-position)))
+           (json-payload (json-encode
+                         `(("model" . ,ollama-complete-model)
+                           ("messages" . 
+                            [(("role" . "user")
+                              ("content" . ,message-text))]))))
+           (proc (start-process-shell-command
+                 "ollama-chat" (current-buffer)
+                 (format "curl -s -X POST http://localhost:11434/api/chat -H 'Content-Type: application/json' -d '%s'"
+                        (replace-regexp-in-string "'" "\\\\\"" json-payload)))))
+      ;; Reset the accumulated response
+      (setq-local ollama-complete--current-response "")
+      (insert "\n\nOllama is thinking...\n")
+      (set-process-filter proc #'ollama-complete--process-filter)
+      (set-process-sentinel 
+       proc
+       (lambda (proc event)
+         (when (string-match-p "finished" event)
+           (with-current-buffer (process-buffer proc)
+             (goto-char (point-max))
+             (insert "\n----------------------------------------\n\n"))))))))
 
-    ;; If cached completions exist, use them immediately
-    (if llm-autocomplete--cached-completions
-        (progn
-          (message "Using cached completions: %s" llm-autocomplete--cached-completions)
-          (list start end (completion-table-dynamic
-                           (lambda (_string) llm-autocomplete--cached-completions))))
-
-      ;; Otherwise, initiate a fresh LLM request asynchronously
-      (progn
-        (message "Requesting LLM completions...")
-        (setq llm-autocomplete--cached-completions nil)
-        (llm-autocomplete--query-llm
-         (llm-autocomplete--get-context)
-         (lambda (completions)
-           (setq llm-autocomplete--cached-completions completions)
-           (message "LLM returned completions: %s" completions)
-           ;; Trigger completion again after receiving the results
-           (completion-in-region start end
-                                 (completion-table-dynamic
-                                  (lambda (_string) llm-autocomplete--cached-completions))))))
-    
-    ;; Return a valid completion function immediately (even before LLM returns)
-    (list start end (completion-table-dynamic
-                     (lambda (_string) llm-autocomplete--cached-completions))))))
-
-;;;###autoload
-(define-minor-mode llm-autocomplete-mode
-  "Toggle LLM-powered autocompletion."
-  :lighter " LLM"
-  :global nil
-  (if llm-autocomplete-mode
-      (add-hook 'completion-at-point-functions
-                #'llm-autocomplete-complete-at-point)
-    (remove-hook 'completion-at-point-functions
-                 #'llm-autocomplete-complete-at-point)))
-
-(defun llm-test-query ()
-  "Test sending a query to the LLM server."
-  (request
-   "http://localhost:11434/api/generate"
-   :type "POST"
-   :data (json-encode `((model . "llama3.2")
-                        (prompt . "test context")))
-   :headers '(("Content-Type" . "application/json"))
-   :parser 'buffer-string
-   :success (cl-function
-             (lambda (&key data &allow-other-keys)
-               (message "Success! Response: %s" data)))
-   :error (cl-function
-           (lambda (&key error-thrown &allow-other-keys)
-             (message "Error! %S" error-thrown)))))
-
-
-(provide 'llm-autocomplete)
-;;; llm-autocomplete.el ends here
+(provide 'ollama-complete)
