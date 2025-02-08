@@ -10,6 +10,14 @@
   :type 'string
   :group 'ollama-complete)
 
+(defvar ollama-complete-chat-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") 'ollama-complete-send-message)
+    map)
+  "Keymap for Ollama chat mode.")
+
+(global-set-key (kbd "C-c s") #'ollama-complete-send-region)
+
 (defvar ollama-complete-chat-buffer "*Ollama Chat*"
   "Buffer name for Ollama chat interactions.")
 
@@ -21,6 +29,11 @@
 
 (defvar-local ollama-complete--accumulated-content ""
   "Accumulated content from all response chunks.")
+
+(define-derived-mode ollama-complete-chat-mode text-mode "Ollama Chat"
+  "Major mode for Ollama chat interaction."
+  (setq-local word-wrap t)
+  (visual-line-mode 1))
 
 (defun ollama-complete--server-running-p ()
   "Check if Ollama server is running."
@@ -46,16 +59,58 @@
                       (side . right)
                       (window-width . 50)))))
 
-(defvar ollama-complete-chat-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-c") 'ollama-complete-send-message)
-    map)
-  "Keymap for Ollama chat mode.")
+(defun ollama-complete-send-region ()
+  "Send the selected region to the Ollama chat buffer."
+  (interactive)
+  (unless (use-region-p)
+    (user-error "No region selected"))
+  
+  ;; Get the selected text and print debug info
+  (let* ((text (buffer-substring-no-properties 
+                (region-beginning) 
+                (region-end)))
+         (source-buffer (buffer-name)))
+    
+    (message "Debug: Selected text length: %d" (length text))
+    
+    ;; Create or get the chat buffer
+    (let ((chat-buf (get-buffer-create ollama-complete-chat-buffer)))
+      ;; Switch to the chat buffer
+      (with-current-buffer chat-buf
+        (message "Debug: Switched to buffer: %s" (buffer-name))
+        
+        ;; Ensure we're in ollama-complete-chat-mode
+        (unless (eq major-mode 'ollama-complete-chat-mode)
+          (ollama-complete-chat-mode))
+        
+        ;; Go to the end and ensure we're on a fresh line
+        (goto-char (point-max))
+        (unless (bolp) (insert "\n"))
+        
+        ;; Insert the text on its own line
+        (let ((start-pos (point)))
+          (insert text)
+          
+          ;; Ensure text ends with newline
+          (unless (bolp) (insert "\n"))
+          
+          ;; Go back to the start of our inserted text
+          (goto-char start-pos)
+          
+          (message "Debug: Text at point: '%s'" 
+                  (buffer-substring-no-properties
+                   (line-beginning-position)
+                   (line-end-position)))
+          
+          ;; Now send this line
+          (ollama-complete-send-message)))
+      
+      ;; Show the chat buffer
+      (display-buffer chat-buf 
+                      '((display-buffer-in-side-window)
+                        (side . right)
+                        (window-width . 80))))))
 
-(define-derived-mode ollama-complete-chat-mode text-mode "Ollama Chat"
-  "Major mode for Ollama chat interaction."
-  (setq-local word-wrap t)
-  (visual-line-mode 1))
 
 (defun ollama-complete--process-filter (proc output)
   "Process filter for Ollama responses. Only prints once at completion."
@@ -98,30 +153,38 @@
   (interactive)
   (if (not (ollama-complete--server-running-p))
       (message "Error: Ollama server is not running!")
-    (let* ((message-text (buffer-substring-no-properties
-                         (line-beginning-position)
-                         (line-end-position)))
-           (json-payload (json-encode
-                         `(("model" . ,ollama-complete-model)
-                           ("messages" . 
-                            [(("role" . "user")
-                              ("content" . ,message-text))]))))
-           (proc (start-process-shell-command
-                 "ollama-chat" (current-buffer)
-                 (format "curl -s -X POST http://localhost:11434/api/chat -H 'Content-Type: application/json' -d '%s'"
-                        (replace-regexp-in-string "'" "\\\\\"" json-payload)))))
-      ;; Reset ALL response buffers
-      (setq-local ollama-complete--response-buffer "")
-      (setq-local ollama-complete--accumulated-content "")
-      (insert "\n\nOllama is thinking...\n")
-      (set-process-filter proc #'ollama-complete--process-filter)
-      (set-process-sentinel 
-       proc
-       (lambda (proc event)
-         (when (string-match-p "finished" event)
-           (with-current-buffer (process-buffer proc)
-             (goto-char (point-max))
-             (insert "\n----------------------------------------\n\n"))))))))
+    (let* ((message-text (string-trim
+                         (buffer-substring-no-properties
+                          (line-beginning-position)
+                          (line-end-position)))))
+      
+      (message "Debug: Message text length: %d" (length message-text))
+      
+      (when (string-empty-p message-text)
+        (user-error "No message to send"))
+      
+      (let* ((json-payload (json-encode
+                           `(("model" . ,ollama-complete-model)
+                             ("messages" . 
+                              [(("role" . "user")
+                                ("content" . ,message-text))]))))
+             (proc (start-process-shell-command
+                   "ollama-chat" (current-buffer)
+                   (format "curl -s -X POST http://localhost:11434/api/chat -H 'Content-Type: application/json' -d '%s'"
+                          (replace-regexp-in-string "'" "\\\\\"" json-payload)))))
+        
+        ;; Reset response buffers
+        (setq-local ollama-complete--response-buffer "")
+        (setq-local ollama-complete--accumulated-content "")
+        (insert "\n\nOllama is thinking...\n")
+        (set-process-filter proc #'ollama-complete--process-filter)
+        (set-process-sentinel 
+         proc
+         (lambda (proc event)
+           (when (string-match-p "finished" event)
+             (with-current-buffer (process-buffer proc)
+               (goto-char (point-max))
+               (insert "\n----------------------------------------\n\n")))))))))
 
 (defun ollama-complete-test-response ()
   "Test function to examine Ollama JSON responses."
