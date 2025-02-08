@@ -16,6 +16,12 @@
 (defvar-local ollama-complete--current-response ""
   "Accumulated response for current LLM query.")
 
+(defvar-local ollama-complete--response-buffer ""
+  "Buffer to accumulate partial JSON responses.")
+
+(defvar-local ollama-complete--accumulated-content ""
+  "Accumulated content from all response chunks.")
+
 (defun ollama-complete--server-running-p ()
   "Check if Ollama server is running."
   (= 0 (call-process "curl" nil nil nil 
@@ -52,32 +58,40 @@
   (visual-line-mode 1))
 
 (defun ollama-complete--process-filter (proc output)
-  "Process filter for Ollama responses."
-  (when-let* ((buf (process-buffer proc)))
+  "Process filter for Ollama responses. Only prints once at completion."
+  (when-let ((buf (process-buffer proc)))
     (with-current-buffer buf
-      (save-excursion
-        (goto-char (point-max))
-        ;; Remove "Ollama is thinking..." and insert prefix on first response
-        (when (and (string-match-p "{" output)  ; First JSON response
-                   (save-excursion 
-                     (search-backward "Ollama is thinking..." nil t)))
-          (let ((inhibit-read-only t))
-            (delete-region (line-beginning-position) (line-end-position))
-            (insert "Ollama: ")))
-        
-        ;; Process each line of JSON
-        (dolist (line (split-string output "\n" t))
-          (when-let* ((json-data (ignore-errors (json-read-from-string line)))
+      ;; Accumulate output
+      (setq ollama-complete--response-buffer 
+            (concat ollama-complete--response-buffer output))
+      
+      ;; Process complete JSON objects
+      (while (string-match "\\`[[:space:]]*{.+?}[[:space:]]*\\(\n\\|\\'\\)" 
+                          ollama-complete--response-buffer)
+        (let* ((json-object-end (match-end 0))
+               (json-str (substring ollama-complete--response-buffer 0 json-object-end)))
+          ;; Remove processed JSON from buffer
+          (setq ollama-complete--response-buffer 
+                (substring ollama-complete--response-buffer json-object-end))
+          
+          ;; Process the JSON object
+          (when-let* ((json-data (ignore-errors (json-read-from-string json-str)))
                      (msg (alist-get 'message json-data))
                      (content (alist-get 'content msg)))
-            ;; Accumulate the response
-            (setq ollama-complete--current-response 
-                  (concat ollama-complete--current-response content))
-            ;; Update the display
-            (let ((inhibit-read-only t))
-              (delete-region (line-beginning-position) (point-max))
-              (insert ollama-complete--current-response))
-            (redisplay)))))))
+            
+            ;; Check if this is the final message
+            (if (eq (alist-get 'done json-data) t)
+                ;; On completion, print the full accumulated content
+                (save-excursion
+                  (goto-char (point-max))
+                  ;; Replace "thinking" message with full response
+                  (when (search-backward "Ollama is thinking..." nil t)
+                    (let ((inhibit-read-only t))
+                      (delete-region (line-beginning-position) (line-end-position))
+                      (insert "Ollama: " ollama-complete--accumulated-content))))
+              ;; Otherwise just accumulate content
+              (setq ollama-complete--accumulated-content
+                    (concat ollama-complete--accumulated-content content)))))))))
 
 (defun ollama-complete-send-message ()
   "Send the current message to Ollama."
@@ -96,8 +110,9 @@
                  "ollama-chat" (current-buffer)
                  (format "curl -s -X POST http://localhost:11434/api/chat -H 'Content-Type: application/json' -d '%s'"
                         (replace-regexp-in-string "'" "\\\\\"" json-payload)))))
-      ;; Reset the accumulated response
-      (setq-local ollama-complete--current-response "")
+      ;; Reset ALL response buffers
+      (setq-local ollama-complete--response-buffer "")
+      (setq-local ollama-complete--accumulated-content "")
       (insert "\n\nOllama is thinking...\n")
       (set-process-filter proc #'ollama-complete--process-filter)
       (set-process-sentinel 
@@ -107,5 +122,44 @@
            (with-current-buffer (process-buffer proc)
              (goto-char (point-max))
              (insert "\n----------------------------------------\n\n"))))))))
+
+(defun ollama-complete-test-response ()
+  "Test function to examine Ollama JSON responses."
+  (interactive)
+  (let* ((json-payload (json-encode
+                       `(("model" . ,ollama-complete-model)
+                         ("messages" . 
+                          [(("role" . "user")
+                            ("content" . "Say hello!"))]))))
+         (buf (get-buffer-create "*Ollama Test*"))
+         proc)
+    ;; Clear the test buffer
+    (with-current-buffer buf
+      (erase-buffer)
+      (insert "Starting Ollama test...\n\n"))
+    
+    ;; Create process and set up filter
+    (setq proc (start-process-shell-command
+                "ollama-test" buf
+                (format "curl -s -X POST http://localhost:11434/api/chat -H 'Content-Type: application/json' -d '%s'"
+                        (replace-regexp-in-string "'" "\\\\\"" json-payload))))
+    
+    ;; Set up process filter to examine JSON
+    (set-process-filter 
+     proc
+     (lambda (proc output)
+       (with-current-buffer (process-buffer proc)
+         (goto-char (point-max))
+         (insert "\n--- New chunk received ---\n")
+         (insert output)
+         ;; Try to parse and examine each line
+         (dolist (line (split-string output "\n" t))
+           (when-let ((json-obj (ignore-errors (json-read-from-string line))))
+             (insert "\nParsed JSON object:\n")
+             (pp json-obj (current-buffer)))))))
+    
+    ;; Display the buffer
+    (pop-to-buffer buf)))
+
 
 (provide 'ollama-complete)
