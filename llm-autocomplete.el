@@ -10,11 +10,6 @@
   :type 'string
   :group 'ollama-complete)
 
-(defvar ollama-complete-chat-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-c") 'ollama-complete-send-message)
-    map)
-  "Keymap for Ollama chat mode.")
 
 (global-set-key (kbd "C-c s") #'ollama-complete-send-region)
 
@@ -30,10 +25,35 @@
 (defvar-local ollama-complete--accumulated-content ""
   "Accumulated content from all response chunks.")
 
+;; menu items
+(defcustom ollama-complete-menu-columns 3
+  "Number of columns to display in the menu."
+  :type 'integer
+  :group 'ollama-complete)
+
+(defcustom ollama-complete-menu-items
+  '((?o . ("Open chat buffer" . ollama-complete-chat))
+    (?s . ("Send region" . ollama-complete-send-region))
+    (?m . ("Change model" . 
+           (lambda ()
+             (let ((new-model (completing-read 
+                              "Select model: " 
+                              '("llama2" "codellama" "mistral" "neural-chat")
+                              nil t)))
+               (setq ollama-complete-model new-model)
+               (message "Model changed to: %s" new-model)))))
+    (?t . ("Test response" . ollama-complete-test-response))
+    (?q . ("Quit" . (lambda () (message "Quit menu.")))))
+  "Menu items for ollama-complete"
+  :type '(alist :key-type character
+                :value-type (cons string function))
+  :group 'ollama-complete)
+
 (define-derived-mode ollama-complete-chat-mode text-mode "Ollama Chat"
   "Major mode for Ollama chat interaction."
   (setq-local word-wrap t)
-  (visual-line-mode 1))
+  (visual-line-mode 1)
+  (use-local-map ollama-complete-chat-mode-map))
 
 (defun ollama-complete--server-running-p ()
   "Check if Ollama server is running."
@@ -223,6 +243,67 @@
     
     ;; Display the buffer
     (pop-to-buffer buf)))
+
+;; menu 
+(defun ollama-complete--format-menu (items columns)
+  "Format ITEMS into COLUMNS columns for display."
+  (let* ((items-list (mapcar (lambda (item) 
+                              (format "[%c] %s" 
+                                     (car item) 
+                                     (cadr item)))
+                            items))
+         (total (length items-list))
+         (rows (ceiling (/ total (float columns))))
+         (padded-list (append items-list 
+                             (make-list (- (* rows columns) total) "")))
+         (format-string
+          (concat
+           (mapconcat
+            (lambda (width) (format "%%-%ds" (+ width 2)))
+            (butlast
+             (cl-loop for col below columns collect
+                      (cl-loop for row below rows
+                               for idx = (+ (* col rows) row)
+                               when (< idx total)
+                               maximize (length (nth idx padded-list)))))
+            "")
+           "%s")))
+    (format "\nOllama Complete Menu | Server: %s | Model: %s\n%s\n%s"
+            (if (ollama-complete--server-running-p)
+                "RUNNING"
+              "NOT RUNNING")
+            (or ollama-complete-model "none")
+            (make-string 50 ?-)
+            (mapconcat
+             (lambda (row)
+               (apply 'format format-string row))
+             (cl-loop for row below rows collect
+                      (cl-loop for col below columns
+                               for idx = (+ (* col rows) row)
+                               when (< idx (length padded-list))
+                               collect (nth idx padded-list)))
+             "\n"))))
+
+(defun ollama-complete-menu ()
+  "Display the ollama-complete menu."
+  (interactive)
+  (let* ((prompt (propertize 
+                  (ollama-complete--format-menu 
+                   ollama-complete-menu-items 
+                   ollama-complete-menu-columns)
+                  'face 'minibuffer-prompt))
+         (key (read-key prompt))
+         (cmd (assoc key ollama-complete-menu-items)))
+    (when cmd
+      (funcall (cdr (cdr cmd))))))
+
+
+(defvar ollama-complete-chat-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") 'ollama-complete-send-message)
+    (define-key map (kbd "?") #'ollama-complete-menu)
+    map)
+  "Keymap for Ollama chat mode.")
 
 
 (provide 'ollama-complete)
