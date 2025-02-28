@@ -23,7 +23,7 @@ AItoComplete is an Emacs package that provides a convenient interface to Ollama,
 
 ```elisp
 (use-package aitocomplete
-  :straight (:host github :repo "yourusername/aitocomplete")
+  :straight (:host github :repo "hipml/aitocomplete")
   :bind (("C-c s" . aitocomplete-send-region)
          ("C-c a" . aitocomplete-menu)))
 ```
