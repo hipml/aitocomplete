@@ -1,77 +1,77 @@
 (require 'json)
 
-(defgroup ollama-complete nil
+(defgroup aitocomplete nil
   "Ollama completion interface for Emacs."
   :group 'applications
-  :prefix "ollama-complete-")
+  :prefix "aitocomplete-")
 
-(defcustom ollama-complete-model "llama3.2"
+(defcustom aitocomplete-model "llama3.2"
   "Default Ollama model to use."
   :type 'string
-  :group 'ollama-complete)
+  :group 'aitocomplete)
 
 
-(global-set-key (kbd "C-c s") #'ollama-complete-send-region)
+(global-set-key (kbd "C-c s") #'aitocomplete-send-region)
 
-(defvar ollama-complete-chat-buffer "*Ollama Chat*"
+(defvar aitocomplete-chat-buffer "*AI Chat*"
   "Buffer name for Ollama chat interactions.")
 
-(defvar-local ollama-complete--current-response ""
+(defvar-local aitocomplete--current-response ""
   "Accumulated response for current LLM query.")
 
-(defvar-local ollama-complete--response-buffer ""
+(defvar-local aitocomplete--response-buffer ""
   "Buffer to accumulate partial JSON responses.")
 
-(defvar-local ollama-complete--accumulated-content ""
+(defvar-local aitocomplete--accumulated-content ""
   "Accumulated content from all response chunks.")
 
 ;; menu items
-(defcustom ollama-complete-menu-columns 3
+(defcustom aitocomplete-menu-columns 3
   "Number of columns to display in the menu."
   :type 'integer
-  :group 'ollama-complete)
+  :group 'aitocomplete)
 
-(defcustom ollama-complete-menu-items
-  '((?o . ("Open chat buffer" . ollama-complete-chat))
-    (?s . ("Send region" . ollama-complete-send-region))
+(defcustom aitocomplete-menu-items
+  '((?o . ("Open chat buffer" . aitocomplete-chat))
+    (?s . ("Send region" . aitocomplete-send-region))
     (?m . ("Change model" . 
            (lambda ()
              (let ((new-model (completing-read 
                               "Select model: " 
                               '("llama2" "codellama" "mistral" "neural-chat")
                               nil t)))
-               (setq ollama-complete-model new-model)
+               (setq aitocomplete-model new-model)
                (message "Model changed to: %s" new-model)))))
-    (?t . ("Test response" . ollama-complete-test-response))
+    (?t . ("Test response" . aitocomplete-test-response))
     (?q . ("Quit" . (lambda () (message "Quit menu.")))))
-  "Menu items for ollama-complete"
+  "Menu items for aitocomplete"
   :type '(alist :key-type character
                 :value-type (cons string function))
-  :group 'ollama-complete)
+  :group 'aitocomplete)
 
-(define-derived-mode ollama-complete-chat-mode text-mode "Ollama Chat"
+(define-derived-mode aitocomplete-chat-mode text-mode "AI Chat"
   "Major mode for Ollama chat interaction."
   (setq-local word-wrap t)
   (visual-line-mode 1)
-  (use-local-map ollama-complete-chat-mode-map))
+  (use-local-map aitocomplete-chat-mode-map))
 
-(defun ollama-complete--server-running-p ()
+(defun aitocomplete--server-running-p ()
   "Check if Ollama server is running."
   (= 0 (call-process "curl" nil nil nil 
                      "--silent" 
                      "--fail" 
                      "http://localhost:11434/api/tags")))
 
-(defun ollama-complete-chat ()
-  "Open or switch to the Ollama chat buffer."
+(defun aitocomplete-chat ()
+  "Open or switch to the AI chat buffer."
   (interactive)
-  (let ((buf (get-buffer-create ollama-complete-chat-buffer)))
+  (let ((buf (get-buffer-create aitocomplete-chat-buffer)))
     (with-current-buffer buf
-      (unless (eq major-mode 'ollama-complete-chat-mode)
-        (ollama-complete-chat-mode))
+      (unless (eq major-mode 'aitocomplete-chat-mode)
+        (aitocomplete-chat-mode))
       (when (= (buffer-size) 0)
-        (insert "Welcome to Ollama Chat!\n")
-        (insert (format "Currently using model: %s\n\n" ollama-complete-model))
+        (insert "Welcome to AI Chat!\n")
+        (insert (format "Currently using model: %s\n\n" aitocomplete-model))
         (insert "Type your message and press C-c C-c to send.\n")
         (insert "----------------------------------------\n\n")))
     (display-buffer buf 
@@ -79,8 +79,8 @@
                       (side . right)
                       (window-width . 50)))))
 
-(defun ollama-complete-send-region ()
-  "Send the selected region to the Ollama chat buffer."
+(defun aitocomplete-send-region ()
+  "Send the selected region to the AI chat buffer."
   (interactive)
   (unless (use-region-p)
     (user-error "No region selected"))
@@ -94,14 +94,14 @@
     (message "Debug: Selected text length: %d" (length text))
     
     ;; Create or get the chat buffer
-    (let ((chat-buf (get-buffer-create ollama-complete-chat-buffer)))
+    (let ((chat-buf (get-buffer-create aitocomplete-chat-buffer)))
       ;; Switch to the chat buffer
       (with-current-buffer chat-buf
         (message "Debug: Switched to buffer: %s" (buffer-name))
         
-        ;; Ensure we're in ollama-complete-chat-mode
-        (unless (eq major-mode 'ollama-complete-chat-mode)
-          (ollama-complete-chat-mode))
+        ;; Ensure we're in aitocomplete-chat-mode
+        (unless (eq major-mode 'aitocomplete-chat-mode)
+          (aitocomplete-chat-mode))
         
         ;; Go to the end and ensure we're on a fresh line
         (goto-char (point-max))
@@ -123,7 +123,7 @@
                    (line-end-position)))
           
           ;; Now send this line
-          (ollama-complete-send-message)))
+          (aitocomplete-send-message)))
       
       ;; Show the chat buffer
       (display-buffer chat-buf 
@@ -132,22 +132,22 @@
                         (window-width . 80))))))
 
 
-(defun ollama-complete--process-filter (proc output)
+(defun aitocomplete--process-filter (proc output)
   "Process filter for Ollama responses. Only prints once at completion."
   (when-let ((buf (process-buffer proc)))
     (with-current-buffer buf
       ;; Accumulate output
-      (setq ollama-complete--response-buffer 
-            (concat ollama-complete--response-buffer output))
+      (setq aitocomplete--response-buffer 
+            (concat aitocomplete--response-buffer output))
       
       ;; Process complete JSON objects
       (while (string-match "\\`[[:space:]]*{.+?}[[:space:]]*\\(\n\\|\\'\\)" 
-                          ollama-complete--response-buffer)
+                          aitocomplete--response-buffer)
         (let* ((json-object-end (match-end 0))
-               (json-str (substring ollama-complete--response-buffer 0 json-object-end)))
+               (json-str (substring aitocomplete--response-buffer 0 json-object-end)))
           ;; Remove processed JSON from buffer
-          (setq ollama-complete--response-buffer 
-                (substring ollama-complete--response-buffer json-object-end))
+          (setq aitocomplete--response-buffer 
+                (substring aitocomplete--response-buffer json-object-end))
           
           ;; Process the JSON object
           (when-let* ((json-data (ignore-errors (json-read-from-string json-str)))
@@ -160,18 +160,18 @@
                 (save-excursion
                   (goto-char (point-max))
                   ;; Replace "thinking" message with full response
-                  (when (search-backward "Ollama is thinking..." nil t)
+                  (when (search-backward "AI is thinking..." nil t)
                     (let ((inhibit-read-only t))
                       (delete-region (line-beginning-position) (line-end-position))
-                      (insert "Ollama: " ollama-complete--accumulated-content))))
+                      (insert "AI: " aitocomplete--accumulated-content))))
               ;; Otherwise just accumulate content
-              (setq ollama-complete--accumulated-content
-                    (concat ollama-complete--accumulated-content content)))))))))
+              (setq aitocomplete--accumulated-content
+                    (concat aitocomplete--accumulated-content content)))))))))
 
-(defun ollama-complete-send-message ()
+(defun aitocomplete-send-message ()
   "Send the current message to Ollama."
   (interactive)
-  (if (not (ollama-complete--server-running-p))
+  (if (not (aitocomplete--server-running-p))
       (message "Error: Ollama server is not running!")
     (let* ((message-text (string-trim
                          (buffer-substring-no-properties
@@ -184,7 +184,7 @@
         (user-error "No message to send"))
       
       (let* ((json-payload (json-encode
-                           `(("model" . ,ollama-complete-model)
+                           `(("model" . ,aitocomplete-model)
                              ("messages" . 
                               [(("role" . "user")
                                 ("content" . ,message-text))]))))
@@ -194,10 +194,10 @@
                           (replace-regexp-in-string "'" "\\\\\"" json-payload)))))
         
         ;; Reset response buffers
-        (setq-local ollama-complete--response-buffer "")
-        (setq-local ollama-complete--accumulated-content "")
-        (insert "\n\nOllama is thinking...\n")
-        (set-process-filter proc #'ollama-complete--process-filter)
+        (setq-local aitocomplete--response-buffer "")
+        (setq-local aitocomplete--accumulated-content "")
+        (insert "\n\nAI is thinking...\n")
+        (set-process-filter proc #'aitocomplete--process-filter)
         (set-process-sentinel 
          proc
          (lambda (proc event)
@@ -206,20 +206,20 @@
                (goto-char (point-max))
                (insert "\n----------------------------------------\n\n")))))))))
 
-(defun ollama-complete-test-response ()
+(defun aitocomplete-test-response ()
   "Test function to examine Ollama JSON responses."
   (interactive)
   (let* ((json-payload (json-encode
-                       `(("model" . ,ollama-complete-model)
+                       `(("model" . ,aitocomplete-model)
                          ("messages" . 
                           [(("role" . "user")
                             ("content" . "Say hello!"))]))))
-         (buf (get-buffer-create "*Ollama Test*"))
+         (buf (get-buffer-create "*AI Test*"))
          proc)
     ;; Clear the test buffer
     (with-current-buffer buf
       (erase-buffer)
-      (insert "Starting Ollama test...\n\n"))
+      (insert "Starting AI test...\n\n"))
     
     ;; Create process and set up filter
     (setq proc (start-process-shell-command
@@ -245,7 +245,7 @@
     (pop-to-buffer buf)))
 
 ;; menu 
-(defun ollama-complete--format-menu (items columns)
+(defun aitocomplete--format-menu (items columns)
   "Format ITEMS into COLUMNS columns for display."
   (let* ((items-list (mapcar (lambda (item) 
                               (format "[%c] %s" 
@@ -268,11 +268,11 @@
                                maximize (length (nth idx padded-list)))))
             "")
            "%s")))
-    (format "\nOllama Complete Menu | Server: %s | Model: %s\n%s\n%s"
-            (if (ollama-complete--server-running-p)
+    (format "\nAItoComplete Menu | Server: %s | Model: %s\n%s\n%s"
+            (if (aitocomplete--server-running-p)
                 "RUNNING"
               "NOT RUNNING")
-            (or ollama-complete-model "none")
+            (or aitocomplete-model "none")
             (make-string 50 ?-)
             (mapconcat
              (lambda (row)
@@ -284,26 +284,26 @@
                                collect (nth idx padded-list)))
              "\n"))))
 
-(defun ollama-complete-menu ()
-  "Display the ollama-complete menu."
+(defun aitocomplete-menu ()
+  "Display the aitocomplete menu."
   (interactive)
   (let* ((prompt (propertize 
-                  (ollama-complete--format-menu 
-                   ollama-complete-menu-items 
-                   ollama-complete-menu-columns)
+                  (aitocomplete--format-menu 
+                   aitocomplete-menu-items 
+                   aitocomplete-menu-columns)
                   'face 'minibuffer-prompt))
          (key (read-key prompt))
-         (cmd (assoc key ollama-complete-menu-items)))
+         (cmd (assoc key aitocomplete-menu-items)))
     (when cmd
       (funcall (cdr (cdr cmd))))))
 
 
-(defvar ollama-complete-chat-mode-map
+(defvar aitocomplete-chat-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-c") 'ollama-complete-send-message)
-    (define-key map (kbd "?") #'ollama-complete-menu)
+    (define-key map (kbd "C-c C-c") 'aitocomplete-send-message)
+    (define-key map (kbd "?") #'aitocomplete-menu)
     map)
-  "Keymap for Ollama chat mode.")
+  "Keymap for AI chat mode.")
 
 
-(provide 'ollama-complete)
+(provide 'aitocomplete)
